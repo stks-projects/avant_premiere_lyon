@@ -2,13 +2,26 @@ import os
 import re
 import json
 import sqlite3
+from datetime import datetime
 import httpx
 from bs4 import BeautifulSoup
 
-URL = "https://www.cinema-comoedia.com/httpswwwboxofficeprocom/"
-BASE_URL = "https://www.cinema-comoedia.com"
 DB_NAME = "avp_lyon.db"
 OUTPUT_DIR = "public"
+TEMPLATE_PATH = "templates/index.html"
+
+# Configuration Comœdia
+COMOEDIA_URL = "https://www.cinema-comoedia.com/httpswwwboxofficeprocom/"
+COMOEDIA_BASE = "https://www.cinema-comoedia.com"
+
+# Les 4 cinémas UGC de la Métropole de Lyon
+UGC_CINEMAS = [
+    {"name": "UGC Part-Dieu", "id": "58"},
+    {"name": "UGC Confluence", "id": "59"},
+    {"name": "UGC Cité Internationale", "id": "32"},
+    {"name": "UGC Astoria", "id": "33"},
+]
+UGC_BASE_URL = "https://www.ugc.fr"
 
 MOIS = {
     "janvier": "01", "février": "02", "mars": "03", "avril": "04",
@@ -17,6 +30,7 @@ MOIS = {
 }
 
 def init_db():
+    """Initialise la table SQLite et ajoute la colonne poster_url si nécessaire."""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -39,7 +53,9 @@ def init_db():
             cursor.execute("ALTER TABLE screenings ADD COLUMN poster_url TEXT")
         conn.commit()
 
-def parse_date_heure(raw_date_str: str):
+# --- 1. Scraper Le Comœdia ---
+
+def parse_date_comoedia(raw_date_str: str):
     pattern = r"(\d{1,2})\s+([a-zéû]+)\s+(\d{4})\s+à\s+(\d{2}:\d{2})"
     match = re.search(pattern, raw_date_str.lower())
     if not match:
@@ -50,57 +66,134 @@ def parse_date_heure(raw_date_str: str):
         return None, None
     return f"{year}-{month}-{int(day):02d}", time_str
 
-def find_event_card(h2_tag):
-    """Remonte l'arbre DOM jusqu'à trouver le conteneur complet de l'événement."""
+def find_comoedia_card(h2_tag):
+    """Remonte dans le DOM pour trouver le conteneur englobant l'image et les infos."""
     curr = h2_tag
     while curr and curr.name != '[document]':
         curr = curr.parent
         if not curr:
             break
-        has_link = curr.find("a", href=re.compile(r"^/events/"))
-        has_img = curr.find("img")
-        if has_link and has_img:
+        if curr.find("a", href=re.compile(r"^/events/")) and curr.find("img"):
             return curr
     return None
 
+def scrape_comoedia():
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; AVP-Lyon-Bot/1.0)"}
+    try:
+        resp = httpx.get(COMOEDIA_URL, headers=headers, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Erreur Comœdia : {e}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    screenings = []
+
+    for h2 in soup.find_all("h2"):
+        title = h2.get_text(strip=True)
+        card = find_comoedia_card(h2) or h2.find_parent("div").find_parent("div")
+
+        date_span = card.find(lambda t: t.name == "span" and "à" in t.text)
+        if not date_span:
+            continue
+        date_iso, time_str = parse_date_comoedia(date_span.get_text(strip=True))
+        if not date_iso or not time_str:
+            continue
+
+        link_tag = card.find("a", href=re.compile(r"^/events/"))
+        event_url = f"{COMOEDIA_BASE}{link_tag['href']}" if link_tag else None
+
+        img_tag = card.find("img")
+        poster_url = img_tag.get("src") if img_tag else None
+
+        parent_div = h2.find_parent("div")
+        desc_div = parent_div.find_next_sibling("div") if parent_div else None
+        description = desc_div.get_text(strip=True) if desc_div else ""
+
+        screenings.append({
+            "cinema": "Le Comoedia",
+            "title": title,
+            "date": date_iso,
+            "time": time_str,
+            "url": event_url,
+            "description": description,
+            "poster_url": poster_url
+        })
+    return screenings
+
+# --- 2. Scraper UGC ---
+
+def scrape_single_ugc(cinema_name: str, cinema_id: str):
+    url = f"{UGC_BASE_URL}/cinema.html?id={cinema_id}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "fr-FR,fr;q=0.9"
+    }
+    try:
+        resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Erreur UGC {cinema_name} : {e}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    screenings = []
+
+    film_titles = soup.find_all(["h2", "h3"])
+    for title_tag in film_titles:
+        container = title_tag.find_parent("article") or title_tag.find_parent("div", class_=re.compile(r"film|card", re.I))
+        if not container:
+            continue
+
+        text_content = container.get_text(separator=" ", strip=True)
+        if "avant-première" not in text_content.lower():
+            continue
+
+        title = title_tag.get_text(strip=True)
+        if not title:
+            continue
+
+        img_tag = container.find("img")
+        poster_url = img_tag.get("src") or img_tag.get("data-src") if img_tag else None
+
+        link_tag = container.find("a", href=re.compile(r"film\.html\?id="))
+        movie_url = f"{UGC_BASE_URL}/{link_tag['href'].lstrip('/')}" if link_tag else url
+
+        time_matches = re.findall(r"\b([0-2]?[0-9][h:][0-5][0-9])\b", text_content)
+        screen_time = time_matches[0].replace("h", ":") if time_matches else "20:00"
+        date_iso = datetime.now().strftime("%Y-%m-%d")
+
+        screenings.append({
+            "cinema": cinema_name,
+            "title": title,
+            "date": date_iso,
+            "time": screen_time,
+            "url": movie_url,
+            "description": f"Avant-première programmée à l'{cinema_name}.",
+            "poster_url": poster_url
+        })
+    return screenings
+
+# --- 3. Pipeline global de Scraping & Mise à jour SQLite ---
+
 def scrape_and_update():
     init_db()
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; AVP-Lyon-Bot/1.0)"}
-    resp = httpx.get(URL, headers=headers)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    all_screenings = []
+
+    # Scraping Comœdia
+    comoedia_items = scrape_comoedia()
+    print(f"Comœdia : {len(comoedia_items)} séances trouvées.")
+    all_screenings.extend(comoedia_items)
+
+    # Scraping des cinémas UGC
+    for ugc in UGC_CINEMAS:
+        ugc_items = scrape_single_ugc(ugc["name"], ugc["id"])
+        print(f"{ugc['name']} : {len(ugc_items)} séances trouvées.")
+        all_screenings.extend(ugc_items)
 
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        for h2 in soup.find_all("h2"):
-            title = h2.get_text(strip=True)
-
-            # Trouver le conteneur englobant l'image et le texte
-            card = find_event_card(h2)
-            if not card:
-                card = h2.find_parent("div").find_parent("div")
-
-            # Date et heure
-            date_span = card.find(lambda t: t.name == "span" and "à" in t.text)
-            if not date_span:
-                continue
-            date_iso, time_str = parse_date_heure(date_span.get_text(strip=True))
-            if not date_iso or not time_str:
-                continue
-
-            # Lien "En savoir plus" / réservation
-            link_tag = card.find("a", href=re.compile(r"^/events/"))
-            event_url = f"{BASE_URL}{link_tag['href']}" if link_tag else None
-
-            # Affiche du film
-            img_tag = card.find("img")
-            poster_url = img_tag.get("src") if img_tag else None
-
-            # Description / Invités
-            parent_text_block = h2.find_parent("div")
-            desc_div = parent_text_block.find_next_sibling("div") if parent_text_block else None
-            description = desc_div.get_text(strip=True) if desc_div else ""
-
+        for s in all_screenings:
             cursor.execute("""
                 INSERT INTO screenings (cinema, title, date, time, url, description, poster_url, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -109,8 +202,10 @@ def scrape_and_update():
                     description = excluded.description,
                     poster_url = excluded.poster_url,
                     updated_at = CURRENT_TIMESTAMP
-            """, ("Le Comoedia", title, date_iso, time_str, event_url, description, poster_url))
+            """, (s['cinema'], s['title'], s['date'], s['time'], s['url'], s['description'], s['poster_url']))
         conn.commit()
+
+# --- 4. Génération de la page statique via templates/index.html ---
 
 def generate_static_site():
     with sqlite3.connect(DB_NAME) as conn:
@@ -122,114 +217,21 @@ def generate_static_site():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     screenings_json = json.dumps(screenings, ensure_ascii=False)
 
-    html_content = f"""<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Avant-Premières Lyon</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen py-10 px-4 font-sans">
-    <div class="max-w-3xl mx-auto">
-        <header class="mb-10 text-center">
-            <h1 class="text-4xl font-extrabold text-amber-400 tracking-tight">Avant-Premières Lyon</h1>
-            <p class="text-zinc-400 mt-2">Toutes les avant-premières au Comœdia (Lyon 7)</p>
-        </header>
+    cinemas = sorted(list({s["cinema"] for s in screenings}))
+    cinema_options = "".join([f'<option value="{c}">{c}</option>' for c in cinemas])
 
-        <!-- Filtre par date -->
-        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 mb-8 shadow-lg flex flex-wrap gap-4 items-center justify-between">
-            <div class="flex items-center gap-3">
-                <label for="date-filter" class="text-sm font-medium text-zinc-300">Filtrer par date :</label>
-                <input type="date" id="date-filter" class="bg-zinc-800 border border-zinc-700 text-white rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-400">
-            </div>
-            <button id="reset-btn" class="text-sm text-zinc-400 hover:text-amber-400 transition hidden underline">
-                Afficher toutes les dates
-            </button>
-        </div>
+    # Lecture du template HTML externe
+    with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
+        html_content = f.read()
 
-        <!-- Liste des séances -->
-        <div id="screenings-list" class="space-y-4"></div>
-        <p id="empty-state" class="text-center text-zinc-500 py-12 hidden">Aucune avant-première trouvée pour cette date.</p>
-    </div>
-
-    <script>
-        const screenings = {screenings_json};
-        const listEl = document.getElementById('screenings-list');
-        const emptyEl = document.getElementById('empty-state');
-        const dateInput = document.getElementById('date-filter');
-        const resetBtn = document.getElementById('reset-btn');
-
-        function formatDateFr(isoDate) {{
-            const [y, m, d] = isoDate.split('-');
-            const date = new Date(y, m - 1, d);
-            return date.toLocaleDateString('fr-FR', {{ weekday: 'long', day: 'numeric', month: 'long' }});
-        }}
-
-        function render(items) {{
-            listEl.innerHTML = '';
-            if (items.length === 0) {{
-                emptyEl.classList.remove('hidden');
-                return;
-            }}
-            emptyEl.classList.add('hidden');
-
-            items.forEach(s => {{
-                const card = document.createElement('article');
-                card.className = "bg-zinc-900 border border-zinc-800 rounded-2xl p-5 hover:border-zinc-700 transition flex gap-5 items-start";
-                
-                const posterHtml = s.poster_url 
-                    ? `<img src="${{s.poster_url}}" alt="${{s.title}}" class="w-24 h-32 object-cover rounded-xl shrink-0 border border-zinc-800 shadow">`
-                    : `<div class="w-24 h-32 bg-zinc-800 rounded-xl shrink-0 flex items-center justify-center text-zinc-600 text-xs">Pas d'affiche</div>`;
-
-                const bookingBtn = s.url 
-                    ? `<a href="${{s.url}}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 text-xs font-semibold bg-amber-400 hover:bg-amber-300 text-zinc-950 px-3.5 py-1.5 rounded-lg whitespace-nowrap transition shadow-sm">
-                        Réserver ↗
-                       </a>`
-                    : '';
-
-                card.innerHTML = `
-                    ${{posterHtml}}
-                    <div class="flex-1 min-w-0">
-                        <div class="flex items-center justify-between gap-4">
-                            <span class="text-xs font-semibold uppercase tracking-wider text-amber-400">
-                                ${{s.cinema}} • ${{formatDateFr(s.date)}} à ${{s.time}}
-                            </span>
-                            ${{bookingBtn}}
-                        </div>
-                        <h2 class="text-xl font-bold text-white mt-1.5">${{s.title}}</h2>
-                        ${{s.description ? `<p class="mt-2 text-sm text-zinc-300 leading-relaxed">${{s.description}}</p>` : ''}}
-                    </div>
-                `;
-                listEl.appendChild(card);
-            }});
-        }}
-
-        dateInput.addEventListener('change', (e) => {{
-            const val = e.target.value;
-            if (val) {{
-                resetBtn.classList.remove('hidden');
-                render(screenings.filter(s => s.date === val));
-            }} else {{
-                resetBtn.classList.add('hidden');
-                render(screenings);
-            }}
-        }});
-
-        resetBtn.addEventListener('click', () => {{
-            dateInput.value = '';
-            resetBtn.classList.add('hidden');
-            render(screenings);
-        }});
-
-        render(screenings);
-    </script>
-</body>
-</html>"""
+    # Remplacement des balises cibles
+    html_content = html_content.replace("/*__SCREENINGS_DATA__*/", screenings_json)
+    html_content = html_content.replace("<!--__CINEMA_OPTIONS__-->", cinema_options)
 
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html_content)
-    print(f"Génération terminée dans '{OUTPUT_DIR}/index.html' ({len(screenings)} séances).")
+
+    print(f"Génération terminée dans '{OUTPUT_DIR}/index.html' ({len(screenings)} séances au total).")
 
 if __name__ == "__main__":
     scrape_and_update()
