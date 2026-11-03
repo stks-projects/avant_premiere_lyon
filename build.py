@@ -19,6 +19,9 @@ MOIS = {
 def init_db():
     with sqlite3.connect(DB_NAME) as conn:
         conn.execute("""
+            DROP TABLE IF EXISTS screenings
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS screenings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 cinema TEXT NOT NULL,
