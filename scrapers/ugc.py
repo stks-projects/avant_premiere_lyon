@@ -13,6 +13,38 @@ UGC_CINEMAS = [
     {"name": "UGC Astoria", "id": "33"},
 ]
 
+MOIS_FR = {
+    "janv": "01", "févr": "02", "mars": "03", "avril": "04", "mai": "05", "juin": "06",
+    "juil": "07", "août": "08", "sept": "09", "oct": "10", "nov": "11", "déc": "12"
+}
+
+def parse_ugc_date(tile_element):
+    """
+    Extrait la vraie date de projection affichée dans la tuile (ex: 'Ven. 6 nov.', '15 nov.').
+    Si introuvable, regarde dans les boutons/onglets de date actifs du bloc.
+    """
+    text = tile_element.get_text(" ", strip=True).lower()
+    
+    # 1. Recherche d'un motif textuel comme "6 nov" ou "15 novembre"
+    match = re.search(r"\b(\d{1,2})\s+([a-zéû]{3,8})\b", text)
+    if match:
+        day = int(match.group(1))
+        month_txt = match.group(2)[:4] # Prendre les 3-4 premières lettres
+        for m_key, m_val in MOIS_FR.items():
+            if m_key in month_txt:
+                current_year = datetime.now().year
+                return f"{current_year}-{m_val}-{day:02d}"
+
+    # 2. Recherche d'un format JJ/MM
+    match_slash = re.search(r"\b(\d{1,2})/(\d{2})\b", text)
+    if match_slash:
+        day = int(match_slash.group(1))
+        month = match_slash.group(2)
+        return f"{datetime.now().year}-{month}-{day:02d}"
+
+    # Fallback : date du jour si introuvable
+    return datetime.now().strftime("%Y-%m-%d")
+
 def scrape_cinema(page, cinema: dict):
     url = f"{UGC_BASE_URL}/cinema.html?id={cinema['id']}"
     print(f"[UGC] Chargement de {cinema['name']}...")
@@ -94,8 +126,7 @@ def scrape_cinema(page, cinema: dict):
         time_matches = re.findall(r"\b([0-2]?[0-9][h:][0-5][0-9])\b", full_text)
         screen_time = time_matches[0].replace("h", ":") if time_matches else "20:00"
 
-        # Date de la séance (date courante pour le POC)
-        date_iso = datetime.now().strftime("%Y-%m-%d")
+        date_iso = parse_ugc_date(tile)
 
         screenings.append({
             "cinema": cinema["name"],
