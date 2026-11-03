@@ -18,10 +18,8 @@ MOIS = {
 
 def init_db():
     with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("""
-            DROP TABLE IF EXISTS screenings
-        """)
-        conn.execute("""
+        cursor = conn.cursor()
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS screenings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 cinema TEXT NOT NULL,
@@ -35,6 +33,11 @@ def init_db():
                 UNIQUE(cinema, title, date, time)
             )
         """)
+        cursor.execute("PRAGMA table_info(screenings)")
+        cols = [c[1] for c in cursor.fetchall()]
+        if "poster_url" not in cols:
+            cursor.execute("ALTER TABLE screenings ADD COLUMN poster_url TEXT")
+        conn.commit()
 
 def parse_date_heure(raw_date_str: str):
     pattern = r"(\d{1,2})\s+([a-zéû]+)\s+(\d{4})\s+à\s+(\d{2}:\d{2})"
@@ -47,6 +50,19 @@ def parse_date_heure(raw_date_str: str):
         return None, None
     return f"{year}-{month}-{int(day):02d}", time_str
 
+def find_event_card(h2_tag):
+    """Remonte l'arbre DOM jusqu'à trouver le conteneur complet de l'événement."""
+    curr = h2_tag
+    while curr and curr.name != '[document]':
+        curr = curr.parent
+        if not curr:
+            break
+        has_link = curr.find("a", href=re.compile(r"^/events/"))
+        has_img = curr.find("img")
+        if has_link and has_img:
+            return curr
+    return None
+
 def scrape_and_update():
     init_db()
     headers = {"User-Agent": "Mozilla/5.0 (compatible; AVP-Lyon-Bot/1.0)"}
@@ -57,29 +73,33 @@ def scrape_and_update():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         for h2 in soup.find_all("h2"):
-            parent_card = h2.find_parent("div")
-            if not parent_card:
-                continue
-            container = parent_card.find_parent("div")
             title = h2.get_text(strip=True)
 
-            date_span = parent_card.find(lambda t: t.name == "span" and "à" in t.text)
-            date_iso, time_str = (None, None)
-            if date_span:
-                date_iso, time_str = parse_date_heure(date_span.get_text(strip=True))
+            # Trouver le conteneur englobant l'image et le texte
+            card = find_event_card(h2)
+            if not card:
+                card = h2.find_parent("div").find_parent("div")
 
+            # Date et heure
+            date_span = card.find(lambda t: t.name == "span" and "à" in t.text)
+            if not date_span:
+                continue
+            date_iso, time_str = parse_date_heure(date_span.get_text(strip=True))
             if not date_iso or not time_str:
                 continue
 
-            link_tag = container.find("a", href=re.compile(r"^/events/")) if container else None
+            # Lien "En savoir plus" / réservation
+            link_tag = card.find("a", href=re.compile(r"^/events/"))
             event_url = f"{BASE_URL}{link_tag['href']}" if link_tag else None
 
-            desc_div = parent_card.find_next_sibling("div")
-            description = desc_div.get_text(strip=True) if desc_div else ""
-
-            # Extraction optionnelle de l'affiche
-            img_tag = container.find("img") if container else None
+            # Affiche du film
+            img_tag = card.find("img")
             poster_url = img_tag.get("src") if img_tag else None
+
+            # Description / Invités
+            parent_text_block = h2.find_parent("div")
+            desc_div = parent_text_block.find_next_sibling("div") if parent_text_block else None
+            description = desc_div.get_text(strip=True) if desc_div else ""
 
             cursor.execute("""
                 INSERT INTO screenings (cinema, title, date, time, url, description, poster_url, updated_at)
@@ -114,7 +134,7 @@ def generate_static_site():
     <div class="max-w-3xl mx-auto">
         <header class="mb-10 text-center">
             <h1 class="text-4xl font-extrabold text-amber-400 tracking-tight">Avant-Premières Lyon</h1>
-            <p class="text-zinc-400 mt-2">Toutes les AVP projetées au Comœdia (Lyon 7)</p>
+            <p class="text-zinc-400 mt-2">Toutes les avant-premières au Comœdia (Lyon 7)</p>
         </header>
 
         <!-- Filtre par date -->
@@ -159,19 +179,25 @@ def generate_static_site():
                 card.className = "bg-zinc-900 border border-zinc-800 rounded-2xl p-5 hover:border-zinc-700 transition flex gap-5 items-start";
                 
                 const posterHtml = s.poster_url 
-                    ? `<img src="${{s.poster_url}}" alt="${{s.title}}" class="w-20 h-28 object-cover rounded-lg shrink-0 border border-zinc-800">`
+                    ? `<img src="${{s.poster_url}}" alt="${{s.title}}" class="w-24 h-32 object-cover rounded-xl shrink-0 border border-zinc-800 shadow">`
+                    : `<div class="w-24 h-32 bg-zinc-800 rounded-xl shrink-0 flex items-center justify-center text-zinc-600 text-xs">Pas d'affiche</div>`;
+
+                const bookingBtn = s.url 
+                    ? `<a href="${{s.url}}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 text-xs font-semibold bg-amber-400 hover:bg-amber-300 text-zinc-950 px-3.5 py-1.5 rounded-lg whitespace-nowrap transition shadow-sm">
+                        Réserver ↗
+                       </a>`
                     : '';
 
                 card.innerHTML = `
                     ${{posterHtml}}
-                    <div class="flex-1">
+                    <div class="flex-1 min-w-0">
                         <div class="flex items-center justify-between gap-4">
                             <span class="text-xs font-semibold uppercase tracking-wider text-amber-400">
                                 ${{s.cinema}} • ${{formatDateFr(s.date)}} à ${{s.time}}
                             </span>
-                            ${{s.url ? `<a href="${{s.url}}" target="_blank" rel="noopener" class="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 px-3 py-1.5 rounded-lg whitespace-nowrap transition">Détails ↗</a>` : ''}}
+                            ${{bookingBtn}}
                         </div>
-                        <h2 class="text-xl font-bold text-white mt-1">${{s.title}}</h2>
+                        <h2 class="text-xl font-bold text-white mt-1.5">${{s.title}}</h2>
                         ${{s.description ? `<p class="mt-2 text-sm text-zinc-300 leading-relaxed">${{s.description}}</p>` : ''}}
                     </div>
                 `;
@@ -183,8 +209,7 @@ def generate_static_site():
             const val = e.target.value;
             if (val) {{
                 resetBtn.classList.remove('hidden');
-                const filtered = screenings.filter(s => s.date === val);
-                render(filtered);
+                render(screenings.filter(s => s.date === val));
             }} else {{
                 resetBtn.classList.add('hidden');
                 render(screenings);
@@ -197,7 +222,6 @@ def generate_static_site():
             render(screenings);
         }});
 
-        // Affichage initial complet
         render(screenings);
     </script>
 </body>
@@ -205,7 +229,7 @@ def generate_static_site():
 
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html_content)
-    print(f"Site statique généré avec succès dans '{OUTPUT_DIR}/index.html' ({len(screenings)} séances).")
+    print(f"Génération terminée dans '{OUTPUT_DIR}/index.html' ({len(screenings)} séances).")
 
 if __name__ == "__main__":
     scrape_and_update()
