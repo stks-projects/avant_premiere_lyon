@@ -3,7 +3,7 @@ name: Scrape & Déploiement GitHub Pages
 on:
   schedule:
     # Tourne chaque jour à 6h00 UTC
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * 6'
   workflow_dispatch: # Déclencheur manuel
   push:
     branches:
