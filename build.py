@@ -2,7 +2,7 @@ import os
 import json
 import sqlite3
 from datetime import datetime
-from scrapers import comoedia, ugc
+from scrapers import comoedia, ugc, pathe
 
 DB_NAME = "avp_lyon.db"
 OUTPUT_DIR = "public"
@@ -11,6 +11,7 @@ TEMPLATE_PATH = "templates/index.html"
 SCRAPERS = [
     comoedia.scrape,
     ugc.scrape,
+    pathe.scrape,
 ]
 
 def init_db():
