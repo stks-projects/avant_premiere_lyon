@@ -14,10 +14,20 @@
             <p class="text-zinc-400 mt-2 text-sm sm:text-base">Le Comœdia & les cinémas UGC de la Métropole</p>
         </header>
 
-        <!-- Barre de filtres UX -->
+        <!-- Barre de recherche et filtres -->
         <section class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 mb-8 shadow-xl space-y-4">
             
-            <!-- 1. Filtres rapides par Période (Chips) -->
+            <!-- 1. Barre de recherche textuelle -->
+            <div class="relative">
+                <input 
+                    type="text" 
+                    id="search-input" 
+                    placeholder="Rechercher un film, un invité, une description..." 
+                    class="w-full bg-zinc-800 border border-zinc-700 text-white rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 placeholder-zinc-500 transition"
+                >
+            </div>
+
+            <!-- 2. Filtres rapides par Période (Chips) -->
             <div>
                 <span class="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-2.5">Date :</span>
                 <div class="flex flex-wrap gap-2" id="date-pills">
@@ -39,7 +49,7 @@
                 </div>
             </div>
 
-            <!-- 2. Filtres complémentaires : Équipe, Cinéma & Date précise -->
+            <!-- 3. Filtres complémentaires : Équipe, Cinéma & Date précise -->
             <div class="flex flex-wrap items-center justify-between gap-4 pt-3 border-t border-zinc-800/80">
                 <div class="flex flex-wrap items-center gap-3">
                     <!-- Filtre Équipe -->
@@ -63,19 +73,20 @@
                     </div>
                 </div>
 
-                <div id="results-count" class="text-xs text-zinc-400"></div>
+                <div id="results-count" class="text-xs text-zinc-400 font-medium"></div>
             </div>
         </section>
 
-        <!-- Liste des séances -->
-        <main id="screenings-list" class="space-y-4"></main>
+        <!-- Liste des films regroupés -->
+        <main id="movies-list" class="space-y-5"></main>
         <p id="empty-state" class="text-center text-zinc-500 py-16 hidden">Aucune avant-première trouvée pour ces critères.</p>
     </div>
 
     <script>
-        const screenings = /*__SCREENINGS_DATA__*/;
-        const listEl = document.getElementById('screenings-list');
+        const rawScreenings = /*__SCREENINGS_DATA__*/;
+        const listEl = document.getElementById('movies-list');
         const emptyEl = document.getElementById('empty-state');
+        const searchInput = document.getElementById('search-input');
         const cinemaSelect = document.getElementById('cinema-filter');
         const customDateInput = document.getElementById('custom-date');
         const castToggleBtn = document.getElementById('cast-toggle');
@@ -136,51 +147,96 @@
             return true;
         }
 
-        function render(items) {
-            listEl.innerHTML = '';
-            countEl.textContent = `${items.length} séance${items.length > 1 ? 's' : ''}`;
+        function groupScreeningsByMovie(screenings) {
+            const moviesMap = new Map();
 
-            if (items.length === 0) {
+            screenings.forEach(s => {
+                const key = s.title.trim().toLowerCase();
+                if (!moviesMap.has(key)) {
+                    moviesMap.set(key, {
+                        title: s.title,
+                        poster_url: s.poster_url,
+                        description: s.description,
+                        has_cast: (s.has_cast === 1 || s.has_cast === true),
+                        screenings: []
+                    });
+                }
+                const entry = moviesMap.get(key);
+                if (!entry.poster_url && s.poster_url) entry.poster_url = s.poster_url;
+                if ((!entry.description || entry.description.length < s.description.length) && s.description) {
+                    entry.description = s.description;
+                }
+                if (s.has_cast === 1 || s.has_cast === true) entry.has_cast = true;
+
+                entry.screenings.push(s);
+            });
+
+            return Array.from(moviesMap.values());
+        }
+
+        function render(groupedMovies, totalScreeningsCount) {
+            listEl.innerHTML = '';
+            countEl.textContent = `${groupedMovies.length} film${groupedMovies.length > 1 ? 's' : ''} (${totalScreeningsCount} séance${totalScreeningsCount > 1 ? 's' : ''})`;
+
+            if (groupedMovies.length === 0) {
                 emptyEl.classList.remove('hidden');
                 return;
             }
             emptyEl.classList.add('hidden');
 
-            items.forEach(s => {
+            groupedMovies.forEach(movie => {
                 const card = document.createElement('article');
-                card.className = "bg-zinc-900 border border-zinc-800/80 rounded-2xl p-4 sm:p-5 hover:border-zinc-700 transition flex gap-4 sm:gap-5 items-start shadow-md";
+                card.className = "bg-zinc-900 border border-zinc-800 rounded-2xl p-4 sm:p-5 hover:border-zinc-700 transition flex flex-col sm:flex-row gap-4 sm:gap-5 shadow-md";
 
-                const posterHtml = s.poster_url 
-                    ? `<img src="${s.poster_url}" alt="${s.title}" class="w-20 h-28 sm:w-24 sm:h-32 object-cover rounded-xl shrink-0 border border-zinc-800 shadow">`
-                    : `<div class="w-20 h-28 sm:w-24 sm:h-32 bg-zinc-800 rounded-xl shrink-0 flex items-center justify-center text-zinc-500 text-xs text-center p-2">Sans affiche</div>`;
+                const posterHtml = movie.poster_url 
+                    ? `<img src="${movie.poster_url}" alt="${movie.title}" class="w-20 h-28 sm:w-28 sm:h-40 object-cover rounded-xl shrink-0 border border-zinc-800 shadow self-start">`
+                    : `<div class="w-20 h-28 sm:w-28 sm:h-40 bg-zinc-800 rounded-xl shrink-0 flex items-center justify-center text-zinc-500 text-xs text-center p-2 self-start">Sans affiche</div>`;
 
-                const bookingBtn = s.url 
-                    ? `<a href="${s.url}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs font-semibold bg-amber-400 hover:bg-amber-300 text-zinc-950 px-3 py-1.5 rounded-lg whitespace-nowrap transition shadow-sm">
-                        Réserver ↗
-                       </a>`
-                    : '';
-
-                const castBadge = (s.has_cast === 1 || s.has_cast === true)
+                const castBadge = movie.has_cast
                     ? `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30">
                         👥 En présence de l'équipe
                        </span>`
                     : '';
 
+                // Génération des pilules de séances pour ce film
+                const slotsHtml = movie.screenings.map(s => {
+                    const isCast = (s.has_cast === 1 || s.has_cast === true);
+                    return `
+                        <div class="flex items-center justify-between gap-3 bg-zinc-950/60 border border-zinc-800 rounded-xl px-3 py-2">
+                            <div class="flex flex-col min-w-0">
+                                <span class="text-xs font-semibold text-zinc-200 truncate">
+                                    ${s.cinema}
+                                </span>
+                                <span class="text-[11px] text-amber-400 font-medium">
+                                    ${formatDateFr(s.date)} à ${s.time}
+                                    ${isCast ? '<span class="text-purple-300 ml-1 font-semibold">• avec équipe</span>' : ''}
+                                </span>
+                            </div>
+                            ${s.url ? `
+                                <a href="${s.url}" target="_blank" rel="noopener noreferrer" class="shrink-0 text-xs font-semibold bg-amber-400 hover:bg-amber-300 text-zinc-950 px-2.5 py-1 rounded-lg transition shadow-sm">
+                                    Réserver ↗
+                                </a>
+                            ` : ''}
+                        </div>
+                    `;
+                }).join('');
+
                 card.innerHTML = `
                     ${posterHtml}
-                    <div class="flex-1 min-w-0">
-                        <div class="flex items-center justify-between gap-3">
-                            <span class="text-xs font-semibold uppercase tracking-wider text-amber-400 truncate">
-                                ${s.cinema} • ${formatDateFr(s.date)} à ${s.time}
-                            </span>
-                            ${bookingBtn}
+                    <div class="flex-1 min-w-0 flex flex-col justify-between">
+                        <div>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <h2 class="text-lg sm:text-xl font-bold text-white leading-snug lowercase">${movie.title}</h2>
+                                ${castBadge}
+                            </div>
+                            ${movie.description ? `<p class="mt-2 text-xs sm:text-sm text-zinc-300 leading-relaxed">${movie.description}</p>` : ''}
                         </div>
-                        <div class="flex flex-wrap items-center gap-2 mt-1.5">
-                            <!-- Titre affiché strictement en minuscules -->
-                            <h2 class="text-lg sm:text-xl font-bold text-white leading-snug lowercase">${s.title}</h2>
-                            ${castBadge}
+                        <div class="mt-4 pt-3 border-t border-zinc-800/80 space-y-2">
+                            <span class="block text-[10px] font-bold uppercase tracking-wider text-zinc-500">Séances disponibles :</span>
+                            <div class="grid grid-cols-1 gap-2">
+                                ${slotsHtml}
+                            </div>
                         </div>
-                        ${s.description ? `<p class="mt-2 text-xs sm:text-sm text-zinc-300 leading-relaxed">${s.description}</p>` : ''}
                     </div>
                 `;
                 listEl.appendChild(card);
@@ -188,17 +244,31 @@
         }
 
         function applyAllFilters() {
+            const query = searchInput.value.trim().toLowerCase();
             const selectedCinema = cinemaSelect.value;
-            const filtered = screenings.filter(s => {
+
+            // 1. Filtrer au niveau des séances unitaires
+            const filteredScreenings = rawScreenings.filter(s => {
+                const matchQuery = !query || 
+                    s.title.toLowerCase().includes(query) || 
+                    (s.description && s.description.toLowerCase().includes(query)) ||
+                    s.cinema.toLowerCase().includes(query);
+                
                 const matchCinema = selectedCinema ? s.cinema === selectedCinema : true;
                 const matchDate = filterByDate(s.date);
                 const matchCast = onlyWithCast ? (s.has_cast === 1 || s.has_cast === true) : true;
-                return matchCinema && matchDate && matchCast;
+
+                return matchQuery && matchCinema && matchDate && matchCast;
             });
-            render(filtered);
+
+            // 2. Regrouper par film
+            const grouped = groupScreeningsByMovie(filteredScreenings);
+            render(grouped, filteredScreenings.length);
         }
 
-        // Toggle filtre Équipe
+        // Événements
+        searchInput.addEventListener('input', applyAllFilters);
+
         castToggleBtn.addEventListener('click', () => {
             onlyWithCast = !onlyWithCast;
             if (onlyWithCast) {
@@ -209,7 +279,6 @@
             applyAllFilters();
         });
 
-        // Boutons pilules Date
         pills.forEach(btn => {
             btn.addEventListener('click', () => {
                 pills.forEach(p => {
@@ -235,7 +304,7 @@
 
         cinemaSelect.addEventListener('change', applyAllFilters);
 
-        // Premier affichage
+        // Premier rendu
         applyAllFilters();
     </script>
 </body>

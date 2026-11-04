@@ -1,6 +1,7 @@
 import os
 import json
 import sqlite3
+from datetime import datetime
 from scrapers import comoedia, ugc
 
 DB_NAME = "avp_lyon.db"
@@ -13,7 +14,6 @@ SCRAPERS = [
 ]
 
 def init_db():
-    """Initialise la table SQLite et gère les migrations de colonnes si existante."""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -39,22 +39,33 @@ def init_db():
             cursor.execute("ALTER TABLE screenings ADD COLUMN has_cast INTEGER DEFAULT 0")
         conn.commit()
 
+def clean_expired_screenings():
+    """Supprime les séances dont la date est strictement antérieure à aujourd'hui."""
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM screenings WHERE date < ?", (today_iso,))
+        purged = cursor.rowcount
+        conn.commit()
+    if purged > 0:
+        print(f"[BDD] {purged} séance(s) passée(s) purgée(s).")
+
 def scrape_and_update():
     init_db()
+    clean_expired_screenings()
     all_screenings = []
     
     for scrape_fn in SCRAPERS:
-        items = scrape_fn()
-        all_screenings.extend(items)
+        try:
+            items = scrape_fn()
+            all_screenings.extend(items)
+        except Exception as e:
+            print(f"Erreur scraper {scrape_fn.__module__}: {e}")
 
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         for s in all_screenings:
-            # 1. Titre standardisé en minuscules
             clean_title = s['title'].strip().lower()
-
-            # 2. Détection de la présence de l'équipe
-            # Recherche dans la description ou les métadonnées fournies
             desc = (s.get('description') or "").lower()
             raw_has_cast = s.get('has_cast')
             
@@ -76,6 +87,7 @@ def scrape_and_update():
         conn.commit()
 
 def generate_static_site():
+    clean_expired_screenings()
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -95,7 +107,7 @@ def generate_static_site():
 
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"Site généré ({len(screenings)} séances).")
+    print(f"Site généré ({len(screenings)} séances au total).")
 
 if __name__ == "__main__":
     scrape_and_update()
