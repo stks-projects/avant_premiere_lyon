@@ -5,6 +5,7 @@ from playwright.sync_api import sync_playwright
 
 UGC_BASE_URL = "https://www.ugc.fr"
 
+# Les cinémas UGC de la Métropole de Lyon
 UGC_CINEMAS = [
     {"name": "UGC Part-Dieu", "id": "58"},
     {"name": "UGC Confluence", "id": "59"},
@@ -63,7 +64,7 @@ def scrape_cinema(page, cinema: dict):
         if "avant-première" not in tag_text and "avant premiere" not in tag_text:
             continue
 
-        # Détection équipe UGC
+        # Détection présence équipe
         has_cast = "avec équipe" in tag_text
 
         # Affiche
@@ -117,13 +118,14 @@ def scrape_cinema(page, cinema: dict):
         # Vraie date de séance
         date_iso = parse_ugc_date(tile)
 
+        # La description générique est filtrée en amont : on laisse vide car UGC ne fournit pas de synopsis sur cette vue
         screenings.append({
             "cinema": cinema["name"],
             "title": title,
             "date": date_iso,
             "time": screen_time,
             "url": movie_url,
-            "description": f"{tag.get_text(strip=True)} à l'{cinema['name']}.",
+            "description": "",
             "poster_url": poster_url,
             "has_cast": has_cast
         })

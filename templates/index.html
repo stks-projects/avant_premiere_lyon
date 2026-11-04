@@ -22,7 +22,7 @@
                 <input 
                     type="text" 
                     id="search-input" 
-                    placeholder="Rechercher un film, un invité, une description..." 
+                    placeholder="Rechercher un film, un invité, un cinéma..." 
                     class="w-full bg-zinc-800 border border-zinc-700 text-white rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 placeholder-zinc-500 transition"
                 >
             </div>
@@ -152,22 +152,25 @@
 
             screenings.forEach(s => {
                 const key = s.title.trim().toLowerCase();
+                
                 if (!moviesMap.has(key)) {
                     moviesMap.set(key, {
                         title: s.title,
                         poster_url: s.poster_url,
-                        description: s.description,
+                        description: s.description || "",
                         has_cast: (s.has_cast === 1 || s.has_cast === true),
                         screenings: []
                     });
                 }
                 const entry = moviesMap.get(key);
                 if (!entry.poster_url && s.poster_url) entry.poster_url = s.poster_url;
-                if ((!entry.description || entry.description.length < s.description.length) && s.description) {
+                
+                // Si la séance apporte une description plus complète (ex: Comœdia), on la retient
+                if (s.description && (!entry.description || s.description.length > entry.description.length)) {
                     entry.description = s.description;
                 }
-                if (s.has_cast === 1 || s.has_cast === true) entry.has_cast = true;
 
+                if (s.has_cast === 1 || s.has_cast === true) entry.has_cast = true;
                 entry.screenings.push(s);
             });
 
@@ -186,7 +189,7 @@
 
             groupedMovies.forEach(movie => {
                 const card = document.createElement('article');
-                card.className = "bg-zinc-900 border border-zinc-800 rounded-2xl p-4 sm:p-5 hover:border-zinc-700 transition flex flex-col sm:flex-row gap-4 sm:gap-5 shadow-md";
+                card.className = "bg-zinc-900 border border-zinc-800 rounded-2xl p-4 sm:p-5 hover:border-zinc-700 transition flex flex-col sm:flex-row gap-4 sm:gap-5 shadow-md relative";
 
                 const posterHtml = movie.poster_url 
                     ? `<img src="${movie.poster_url}" alt="${movie.title}" class="w-20 h-28 sm:w-28 sm:h-40 object-cover rounded-xl shrink-0 border border-zinc-800 shadow self-start">`
@@ -198,11 +201,33 @@
                        </span>`
                     : '';
 
-                // Génération des pilules de séances pour ce film
+                // Règle d'affichage :
+                // - Si plusieurs séances : masquée par défaut et lisible au survol
+                // - Si séance unique : affichée sous le titre
+                let descriptionHtml = '';
+                const hasMultipleScreenings = movie.screenings.length > 1;
+
+                if (movie.description) {
+                    if (hasMultipleScreenings) {
+                        descriptionHtml = `
+                            <div class="relative group mt-2 inline-flex items-center">
+                                <span class="text-xs text-zinc-500 underline decoration-dotted underline-offset-2 cursor-help hover:text-zinc-300 transition">
+                                    ℹ️ En savoir plus sur le film
+                                </span>
+                                <div class="absolute left-0 bottom-full mb-2 w-72 sm:w-96 p-3 bg-zinc-950/95 border border-zinc-700 rounded-xl text-xs text-zinc-300 shadow-2xl backdrop-blur-sm opacity-0 invisible group-hover:opacity-100 group-hover:visible transition duration-150 z-20 pointer-events-none">
+                                    ${movie.description}
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        descriptionHtml = `<p class="mt-2 text-xs sm:text-sm text-zinc-400 leading-relaxed">${movie.description}</p>`;
+                    }
+                }
+
                 const slotsHtml = movie.screenings.map(s => {
                     const isCast = (s.has_cast === 1 || s.has_cast === true);
                     return `
-                        <div class="flex items-center justify-between gap-3 bg-zinc-950/60 border border-zinc-800 rounded-xl px-3 py-2">
+                        <div class="flex items-center justify-between gap-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl px-3 py-2 hover:border-zinc-700 transition">
                             <div class="flex flex-col min-w-0">
                                 <span class="text-xs font-semibold text-zinc-200 truncate">
                                     ${s.cinema}
@@ -229,7 +254,7 @@
                                 <h2 class="text-lg sm:text-xl font-bold text-white leading-snug lowercase">${movie.title}</h2>
                                 ${castBadge}
                             </div>
-                            ${movie.description ? `<p class="mt-2 text-xs sm:text-sm text-zinc-300 leading-relaxed">${movie.description}</p>` : ''}
+                            ${descriptionHtml}
                         </div>
                         <div class="mt-4 pt-3 border-t border-zinc-800/80 space-y-2">
                             <span class="block text-[10px] font-bold uppercase tracking-wider text-zinc-500">Séances disponibles :</span>
@@ -247,7 +272,6 @@
             const query = searchInput.value.trim().toLowerCase();
             const selectedCinema = cinemaSelect.value;
 
-            // 1. Filtrer au niveau des séances unitaires
             const filteredScreenings = rawScreenings.filter(s => {
                 const matchQuery = !query || 
                     s.title.toLowerCase().includes(query) || 
@@ -261,7 +285,6 @@
                 return matchQuery && matchCinema && matchDate && matchCast;
             });
 
-            // 2. Regrouper par film
             const grouped = groupScreeningsByMovie(filteredScreenings);
             render(grouped, filteredScreenings.length);
         }
@@ -304,7 +327,6 @@
 
         cinemaSelect.addEventListener('change', applyAllFilters);
 
-        // Premier rendu
         applyAllFilters();
     </script>
 </body>
