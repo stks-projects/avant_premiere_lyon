@@ -5,7 +5,6 @@ from playwright.sync_api import sync_playwright
 
 UGC_BASE_URL = "https://www.ugc.fr"
 
-# Les cinémas UGC de la Métropole de Lyon
 UGC_CINEMAS = [
     {"name": "UGC Part-Dieu", "id": "58"},
     {"name": "UGC Confluence", "id": "59"},
@@ -19,30 +18,23 @@ MOIS_FR = {
 }
 
 def parse_ugc_date(tile_element):
-    """
-    Extrait la vraie date de projection affichée dans la tuile (ex: 'Ven. 6 nov.', '15 nov.').
-    Si introuvable, regarde dans les boutons/onglets de date actifs du bloc.
-    """
+    """Extrait la vraie date de séance affichée dans la tuile."""
     text = tile_element.get_text(" ", strip=True).lower()
     
-    # 1. Recherche d'un motif textuel comme "6 nov" ou "15 novembre"
     match = re.search(r"\b(\d{1,2})\s+([a-zéû]{3,8})\b", text)
     if match:
         day = int(match.group(1))
-        month_txt = match.group(2)[:4] # Prendre les 3-4 premières lettres
+        month_txt = match.group(2)[:4]
         for m_key, m_val in MOIS_FR.items():
             if m_key in month_txt:
-                current_year = datetime.now().year
-                return f"{current_year}-{m_val}-{day:02d}"
+                return f"{datetime.now().year}-{m_val}-{day:02d}"
 
-    # 2. Recherche d'un format JJ/MM
     match_slash = re.search(r"\b(\d{1,2})/(\d{2})\b", text)
     if match_slash:
         day = int(match_slash.group(1))
         month = match_slash.group(2)
         return f"{datetime.now().year}-{month}-{day:02d}"
 
-    # Fallback : date du jour si introuvable
     return datetime.now().strftime("%Y-%m-%d")
 
 def scrape_cinema(page, cinema: dict):
@@ -61,11 +53,9 @@ def scrape_cinema(page, cinema: dict):
     screenings = []
     seen_titles = set()
 
-    # Sélection de toutes les tuiles de films UGC
     tiles = soup.find_all("div", class_=re.compile(r"component--film-tile", re.I))
 
     for tile in tiles:
-        # Vérification de la présence du badge Avant-première
         tag = tile.find(class_=re.compile(r"film-tag", re.I))
         if not tag:
             continue
@@ -73,7 +63,10 @@ def scrape_cinema(page, cinema: dict):
         if "avant-première" not in tag_text and "avant premiere" not in tag_text:
             continue
 
-        # Extraction de l'affiche
+        # Détection équipe UGC
+        has_cast = "avec équipe" in tag_text
+
+        # Affiche
         img = tile.find("img")
         poster_url = None
         if img:
@@ -81,7 +74,7 @@ def scrape_cinema(page, cinema: dict):
             if poster_url and not poster_url.startswith("http"):
                 poster_url = f"{UGC_BASE_URL}/{poster_url.lstrip('/')}"
 
-        # Extraction du titre et du lien de réservation
+        # Titre et lien
         links = tile.find_all("a")
         title = None
         movie_url = url
@@ -91,41 +84,37 @@ def scrape_cinema(page, cinema: dict):
             href = a.get("href", "")
             txt_lower = txt.lower()
 
-            # Identification du lien de réservation direct
             if txt_lower in ["je réserve", "réserver", "voir la bande annonce"]:
                 if href:
                     movie_url = href if href.startswith("http") else f"{UGC_BASE_URL}/{href.lstrip('/')}"
-            # Exclusion explicite de "séances" pour ne pas l'attribuer comme titre
             elif txt_lower == "séances":
                 if href and movie_url == url:
                     movie_url = href if href.startswith("http") else f"{UGC_BASE_URL}/{href.lstrip('/')}"
-            # Premier texte valide retenu comme titre
             elif txt and len(txt) > 1 and not title:
-                title = txt
+                title = txt.lower()
                 if href and movie_url == url:
                     movie_url = href if href.startswith("http") else f"{UGC_BASE_URL}/{href.lstrip('/')}"
 
-        # Fallback 1 : balises de titres HTML standard
         if not title or title.lower() in ["séances", "avant-première"]:
             heading = tile.find(["h2", "h3", "h4", "h5"])
             if heading and heading.get_text(strip=True).lower() not in ["séances", "avant-première"]:
-                title = heading.get_text(strip=True)
+                title = heading.get_text(strip=True).lower()
 
-        # Fallback 2 : déduction du titre depuis le slug de l'URL du film
         if (not title or title.lower() in ["séances", "avant-première"]) and "film_" in movie_url:
             slug_match = re.search(r"film_([a-zA-Z0-9\-]+)_\d+", movie_url)
             if slug_match:
-                title = slug_match.group(1).replace("-", " ").replace("_", " ").upper()
+                title = slug_match.group(1).replace("-", " ").replace("_", " ").lower()
 
-        if not title or title.lower() in seen_titles:
+        if not title or title in seen_titles:
             continue
-        seen_titles.add(title.lower())
+        seen_titles.add(title)
 
-        # Extraction de l'heure
+        # Heure
         full_text = tile.get_text(" ", strip=True)
         time_matches = re.findall(r"\b([0-2]?[0-9][h:][0-5][0-9])\b", full_text)
         screen_time = time_matches[0].replace("h", ":") if time_matches else "20:00"
 
+        # Vraie date de séance
         date_iso = parse_ugc_date(tile)
 
         screenings.append({
@@ -135,7 +124,8 @@ def scrape_cinema(page, cinema: dict):
             "time": screen_time,
             "url": movie_url,
             "description": f"{tag.get_text(strip=True)} à l'{cinema['name']}.",
-            "poster_url": poster_url
+            "poster_url": poster_url,
+            "has_cast": has_cast
         })
 
     return screenings
@@ -168,4 +158,4 @@ if __name__ == "__main__":
     results = scrape()
     print(f"\nTotal : {len(results)} séances UGC récupérées.")
     for s in results:
-        print(f"[{s['cinema']}] {s['title']} ({s['time']}) -> {s['url']}")
+        print(f"[{s['cinema']}] {s['title']} ({s['date']} {s['time']}) - Equipe: {s['has_cast']}")

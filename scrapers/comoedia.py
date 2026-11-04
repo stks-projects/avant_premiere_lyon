@@ -41,7 +41,7 @@ def scrape():
     screenings = []
 
     for h2 in soup.find_all("h2"):
-        title = h2.get_text(strip=True)
+        title = h2.get_text(strip=True).lower()
         card = find_card(h2) or h2.find_parent("div").find_parent("div")
         if not card:
             continue
@@ -57,6 +57,10 @@ def scrape():
         img = card.find("img")
         parent_div = h2.find_parent("div")
         desc_div = parent_div.find_next_sibling("div") if parent_div else None
+        description = desc_div.get_text(strip=True) if desc_div else ""
+
+        # Détection équipe Comœdia
+        has_cast = "en présence" in description.lower()
 
         screenings.append({
             "cinema": "Le Comoedia",
@@ -64,12 +68,14 @@ def scrape():
             "date": date_iso,
             "time": time_str,
             "url": f"{BASE_URL}{link['href']}" if link else None,
-            "description": desc_div.get_text(strip=True) if desc_div else "",
-            "poster_url": img.get("src") if img else None
+            "description": description,
+            "poster_url": img.get("src") if img else None,
+            "has_cast": has_cast
         })
     return screenings
 
 if __name__ == "__main__":
-    # Test autonome rapide
     results = scrape()
     print(f"{len(results)} séances trouvées pour Comœdia")
+    for r in results:
+        print(f"[{r['cinema']}] {r['title']} (Equipe: {r['has_cast']})")
