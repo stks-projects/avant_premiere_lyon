@@ -115,7 +115,7 @@ def scrape():
 
         # 6. Détection présence d'équipe / séance présentée
         full_lower = wysiwyg.get_text(" ", strip=True).lower()
-        has_cast = 1 if any(k in full_lower for k in ["séance présentée", "en présence", "rencontre avec", "suivi d'un échange", "avec l'équipe"]) else 0
+        has_cast = 1 if any(k in full_lower for k in ["en présence", "rencontre avec", "suivi d'un échange", "avec l'équipe"]) else 0
 
         key = (cinema, title, date_iso, time_str)
         if key in seen:
