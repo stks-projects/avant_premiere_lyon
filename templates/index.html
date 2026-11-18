@@ -56,7 +56,17 @@
                     <button id="cast-toggle" class="px-3 py-1.5 rounded-lg text-xs font-semibold border border-purple-500/40 bg-purple-950/30 text-purple-300 hover:bg-purple-900/50 transition flex items-center gap-1.5">
                         <span>👥 Avec équipe</span>
                     </button>
-
+                    <!-- Filtre Réseau -->
+                    <div class="flex items-center gap-2">
+                        <label for="network-filter" class="text-xs font-bold uppercase tracking-wider text-zinc-400">Réseau :</label>
+                        <select id="network-filter" class="bg-zinc-800 border border-zinc-700 text-white rounded-lg px-3 py-1.5 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-amber-400">
+                            <option value="">Tous les réseaux</option>
+                            <option value="UGC">UGC</option>
+                            <option value="Pathé">Pathé</option>
+                            <option value="Cinémas Lumière">Cinémas Lumière</option>
+                            <option value="Autres">Autres</option>
+                        </select>
+                    </div>
                     <!-- Filtre Cinéma -->
                     <div class="flex items-center gap-2">
                         <label for="cinema-filter" class="text-xs font-bold uppercase tracking-wider text-zinc-400">Cinéma :</label>
@@ -92,7 +102,7 @@
         const castToggleBtn = document.getElementById('cast-toggle');
         const pills = document.querySelectorAll('.pill-btn');
         const countEl = document.getElementById('results-count');
-
+        const networkSelect = document.getElementById('network-filter');
         let activeDateMode = 'all';
         let onlyWithCast = false;
 
@@ -145,6 +155,14 @@
             }
 
             return true;
+        }
+
+        function getNetwork(cinemaName) {
+            const name = (cinemaName || '').toLowerCase();
+            if (name.includes('ugc')) return 'UGC';
+            if (name.includes('pathé') || name.includes('pathe')) return 'Pathé';
+            if (name.includes('lumière') || name.includes('lumiere')) return 'Cinémas Lumière';
+            return 'Autres';
         }
 
         function groupScreeningsByMovie(screenings) {
@@ -270,21 +288,23 @@
 
         function applyAllFilters() {
             const query = searchInput.value.trim().toLowerCase();
+            const selectedNetwork = networkSelect.value;
             const selectedCinema = cinemaSelect.value;
-
+        
             const filteredScreenings = rawScreenings.filter(s => {
                 const matchQuery = !query || 
                     s.title.toLowerCase().includes(query) || 
                     (s.description && s.description.toLowerCase().includes(query)) ||
                     s.cinema.toLowerCase().includes(query);
                 
+                const matchNetwork = selectedNetwork ? getNetwork(s.cinema) === selectedNetwork : true;
                 const matchCinema = selectedCinema ? s.cinema === selectedCinema : true;
                 const matchDate = filterByDate(s.date);
                 const matchCast = onlyWithCast ? (s.has_cast === 1 || s.has_cast === true) : true;
-
-                return matchQuery && matchCinema && matchDate && matchCast;
+        
+                return matchQuery && matchNetwork && matchCinema && matchDate && matchCast;
             });
-
+        
             const grouped = groupScreeningsByMovie(filteredScreenings);
             render(grouped, filteredScreenings.length);
         }
@@ -325,8 +345,19 @@
             }
         });
 
-        cinemaSelect.addEventListener('change', applyAllFilters);
-
+        networkSelect.addEventListener('change', () => {
+            if (networkSelect.value && cinemaSelect.value && getNetwork(cinemaSelect.value) !== networkSelect.value) {
+                cinemaSelect.value = '';
+            }
+            applyAllFilters();
+        });
+        
+        cinemaSelect.addEventListener('change', () => {
+            if (cinemaSelect.value) {
+                networkSelect.value = getNetwork(cinemaSelect.value);
+            }
+    applyAllFilters();
+});
         applyAllFilters();
     </script>
 </body>
