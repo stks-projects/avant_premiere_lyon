@@ -14,18 +14,12 @@ MOIS = {
 }
 
 def parse_date_lumiere(raw_str: str):
-    """Extrait la date ISO et l'heure depuis un texte type 'Mercredi 25 novembre 2026 à 20h30' ou '25/11 à 20:30'."""
-    text = raw_str.lower()
-    
-    # Extraction de l'heure (ex: 20h30, 20:30, 20h)
-    time_match = re.search(r"\b(\d{1,2})[h:](\d{2})?\b", text)
-    time_str = "20:00"
-    if time_match:
-        hour = int(time_match.group(1))
-        minute = time_match.group(2) or "00"
-        time_str = f"{hour:02d}:{minute}"
+    """Extrait la date ISO et l'heure depuis un texte type 'Mardi 24 novembre à 18h45'."""
+    text = raw_str.lower().replace("\xa0", " ")
 
-    # Format littéral : "25 novembre" ou "25 novembre 2026"
+    time_match = re.search(r"\b(\d{1,2})[h:](\d{2})\b", text)
+    time_str = f"{int(time_match.group(1)):02d}:{time_match.group(2)}" if time_match else "20:00"
+
     date_match = re.search(r"(\d{1,2})\s+([a-zéû]+)(?:\s+(\d{4}))?", text)
     if date_match:
         day = int(date_match.group(1))
@@ -35,22 +29,11 @@ def parse_date_lumiere(raw_str: str):
         if month:
             return f"{year}-{month}-{day:02d}", time_str
 
-    # Format numérique : "25/11" ou "25/11/2026"
-    num_match = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", text)
-    if num_match:
-        day = int(num_match.group(1))
-        month = int(num_match.group(2))
-        year = num_match.group(3) or str(datetime.now().year)
-        if len(year) == 2:
-            year = f"20{year}"
-        if 1 <= month <= 12 and 1 <= day <= 31:
-            return f"{year}-{month:02d}-{day:02d}", time_str
-
     return None, None
 
-def detect_cinema(text: str) -> str:
-    """Identifie la salle du réseau Lumière mentionnée dans la carte."""
-    t = text.lower()
+def detect_cinema(header_text: str) -> str:
+    """Identifie le cinéma Lumière depuis le bandeau d'en-tête."""
+    t = header_text.lower()
     if "terreaux" in t:
         return "Lumière Terreaux"
     if "bellecour" in t:
@@ -72,63 +55,67 @@ def scrape():
         return []
 
     soup = BeautifulSoup(resp.text, "html.parser")
+    main = soup.find("main", id="main-content") or soup
     screenings = []
     seen = set()
 
-    # On cible les conteneurs d'articles/cartes contenant un titre (h2, h3, h4)
-    title_tags = soup.find_all(["h2", "h3", "h4"])
-
-    for title_tag in title_tags:
-        title_raw = title_tag.get_text(" ", strip=True)
-        if not title_raw or len(title_raw) < 2:
+    for section in main.find_all("section"):
+        wysiwyg = section.find("div", class_="wysiwyg")
+        if not wysiwyg:
             continue
 
-        # Remonte jusqu'à la carte englobante
-        card = (
-            title_tag.find_parent("article")
-            or title_tag.find_parent("div", class_=re.compile(r"event|evenement|film|movie|card|item|post|bloc", re.I))
-            or title_tag.find_parent("div")
-        )
-        if not card:
+        paragraphs = wysiwyg.find_all("p")
+        if len(paragraphs) < 2:
             continue
 
-        full_text = card.get_text(" ", strip=True)
-
-        # Extraction date & heure
-        date_iso, time_str = parse_date_lumiere(full_text)
+        # 1. En-tête : Date, heure, salle et mention "Séance présentée"
+        header_text = paragraphs[0].get_text(" ", strip=True).replace("\xa0", " ")
+        date_iso, time_str = parse_date_lumiere(header_text)
         if not date_iso:
             continue
 
-        # Nettoyage du titre
-        title = title_raw.lower()
-        title = re.sub(r"^(avant-premi[eè]re\s*[:\-–]\s*|avp\s*[:\-–]\s*|séance spéciale\s*[:\-–]\s*)", "", title).strip()
+        cinema = detect_cinema(header_text)
 
-        # Identification du cinéma (Bellecour, Terreaux, Fourmi)
-        cinema = detect_cinema(full_text)
+        # 2. Titre du film (dans le 2e paragraphe, premier <strong>)
+        title_p = paragraphs[1]
+        strong_tag = title_p.find("strong")
+        title_raw = strong_tag.get_text(" ", strip=True) if strong_tag else title_p.get_text(" ", strip=True)
+        title = title_raw.replace("\xa0", " ").strip().lower()
+        if not title:
+            continue
 
-        # Lien vers la fiche ou réservation
-        link_tag = card.find("a", href=True)
-        booking_url = link_tag["href"] if link_tag else URL_AVP
-        if not booking_url.startswith("http"):
-            booking_url = f"{BASE_URL}/{booking_url.lstrip('/')}"
+        # 3. Synopsis (premier paragraphe descriptif hors métadonnées/billetterie)
+        description = ""
+        for p in paragraphs[2:]:
+            p_txt = p.get_text(" ", strip=True).replace("\xa0", " ")
+            if not p_txt or len(p_txt) < 40:
+                continue
+            if any(skip in p_txt.lower() for skip in ["achat conseillé", "lire la suite", "remerciements à", "prix de la mise", "sélection officielle", "quinzaine des"]):
+                continue
+            description = p_txt
+            break
 
-        # Affiche du film
-        img_tag = card.find("img")
+        # 4. Lien de réservation direct (cotecine.fr) ou fiche film
+        booking_url = URL_AVP
+        cotecine_link = wysiwyg.find("a", href=re.compile(r"cotecine\.fr", re.I))
+        film_link = wysiwyg.find("a", href=re.compile(r"/film/"))
+        if cotecine_link:
+            booking_url = cotecine_link["href"]
+        elif film_link:
+            href = film_link["href"]
+            booking_url = href if href.startswith("http") else f"{BASE_URL}/{href.lstrip('/')}"
+
+        # 5. Affiche du film
+        img_tag = section.find("img")
         poster_url = None
         if img_tag:
-            poster_url = img_tag.get("src") or img_tag.get("data-src") or img_tag.get("data-lazy-src")
+            poster_url = img_tag.get("src") or img_tag.get("data-src")
             if poster_url and not poster_url.startswith("http"):
                 poster_url = f"{BASE_URL}/{poster_url.lstrip('/')}"
 
-        # Détection présence d'équipe / invités
-        t_lower = full_text.lower()
-        has_cast = 1 if any(k in t_lower for k in ["en présence", "rencontre avec", "suivi d'un échange", "suivie d'un débat", "avec l'équipe"]) else 0
-
-        # Extraction d'une éventuelle description courte (hors titre)
-        desc_tag = card.find("p")
-        description = desc_tag.get_text(" ", strip=True) if desc_tag else ""
-        if description.lower() == title:
-            description = ""
+        # 6. Détection présence d'équipe / séance présentée
+        full_lower = wysiwyg.get_text(" ", strip=True).lower()
+        has_cast = 1 if any(k in full_lower for k in ["séance présentée", "en présence", "rencontre avec", "suivi d'un échange", "avec l'équipe"]) else 0
 
         key = (cinema, title, date_iso, time_str)
         if key in seen:
